@@ -15,6 +15,8 @@ from pytdbot import types
 from app.config import get_settings
 from app.services.tdlib_runtime import get_client
 
+log = logging.getLogger(__name__)
+
 
 def tdlib_local_path_str(path: str) -> str:
     return str(Path(path).resolve()).replace("\\", "/")
@@ -101,16 +103,48 @@ def _reply_to(reply_to_message_id: int | None) -> types.InputMessageReplyToMessa
 
 async def _resolve_chat_id_for_send(c, target_chat_id: int) -> int:
     """
-    Socialize stores Telegram user ids; TDLib sendMessage expects a chat id.
-    For user ids, createPrivateChat returns/creates the real private chat id.
+    Socialize usually stores Telegram *user* ids (Bot API private chat id == user id).
+    TDLib user clients need the real private *chat* id from getChat/createPrivateChat.
+    If the caller already passes a TDLib chat id, getChat succeeds and we keep it.
     """
-    if target_chat_id <= 0:
+    if target_chat_id == 0:
         return target_chat_id
-    maybe = await c.createPrivateChat(user_id=target_chat_id, force=False)
-    if not isinstance(maybe, types.Error) and getattr(maybe, "id", 0):
-        return int(maybe.id)
-    # Fall back to caller-provided id (it may already be a real chat id).
-    return target_chat_id
+    if target_chat_id < 0:
+        return target_chat_id
+
+    errs: list[str] = []
+
+    existing = await c.getChat(chat_id=target_chat_id)
+    if not isinstance(existing, types.Error):
+        cid = int(getattr(existing, "id", 0) or 0)
+        if cid:
+            log.debug("TDLib send: %s is already a chat id", target_chat_id)
+            return cid
+    else:
+        errs.append(f"getChat: {existing.message} ({existing.code})")
+
+    for force in (False, True):
+        chat = await c.createPrivateChat(user_id=target_chat_id, force=force)
+        if isinstance(chat, types.Error):
+            errs.append(f"createPrivateChat(force={force}): {chat.message} ({chat.code})")
+            continue
+        cid = int(getattr(chat, "id", 0) or 0)
+        if cid:
+            log.info(
+                "TDLib send: resolved user_id %s -> chat_id %s (force=%s)",
+                target_chat_id,
+                cid,
+                force,
+            )
+            return cid
+        errs.append(f"createPrivateChat(force={force}): chat missing id")
+
+    raise RuntimeError(
+        f"Could not open a private TDLib chat for Telegram id {target_chat_id}. "
+        f"TDLib: {'; '.join(errs)}. "
+        "If this user has never messaged this account, they may need to start the chat first, "
+        "or their privacy settings may block non-contacts."
+    )
 
 
 async def _send_with_private_chat_fallback(

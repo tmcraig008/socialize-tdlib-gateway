@@ -20,6 +20,9 @@ from pytdbot import Client, ClientManager, types
 
 from app.config import get_settings
 from app.services import socialize_webhook
+from app.services.pytdbot_tdlib_compat import install_pytdbot_schema_fallback
+
+install_pytdbot_schema_fallback()
 
 log = logging.getLogger(__name__)
 
