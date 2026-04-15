@@ -238,6 +238,8 @@ async def send_text(
     chat_id: int,
     text: str,
     reply_to_message_id: int | None,
+    link_label: str | None = None,
+    link_url: str | None = None,
 ) -> dict[str, Any]:
     _ = reply_to_message_id
     settings = get_settings()
@@ -250,7 +252,14 @@ async def send_text(
     try:
         from app.services.tdlib_live import send_message_live
 
-        mid = await send_message_live(workspace_id, chat_id, text, reply_to_message_id)
+        mid = await send_message_live(
+            workspace_id,
+            chat_id,
+            text,
+            reply_to_message_id,
+            link_label=link_label,
+            link_url=link_url,
+        )
         return {"telegramMessageId": mid}
     except NotImplementedError as e:
         raise RuntimeError(str(e)) from e
@@ -262,6 +271,8 @@ async def send_media(
     path: str,
     kind: str,
     caption: str | None,
+    link_label: str | None = None,
+    link_url: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     if settings.tdlib_mode == "mock":
@@ -269,7 +280,15 @@ async def send_media(
     try:
         from app.services.tdlib_live import send_media_live
 
-        mid = await send_media_live(workspace_id, chat_id, path, kind, caption)
+        mid = await send_media_live(
+            workspace_id,
+            chat_id,
+            path,
+            kind,
+            caption,
+            link_label=link_label,
+            link_url=link_url,
+        )
         return {"telegramMessageId": mid}
     except NotImplementedError as e:
         raise RuntimeError(str(e)) from e

@@ -139,6 +139,31 @@ def _map_authorization_to_status(auth_state: str | None) -> str:
     return "pending_auth"
 
 
+def tdlib_workspace_has_persisted_session(workspace_id: str) -> bool:
+    """
+    Heuristic: TDLib wrote real data under TDLIB_DATA_ROOT/<workspaceId> after a successful login.
+    Used to re-open the same session after the gateway process restarts (Railway redeploy, etc.).
+
+    Requires a persistent volume on TDLIB_DATA_ROOT — an ephemeral filesystem loses sessions on redeploy.
+    """
+    base = Path(get_settings().tdlib_data_root).resolve() / workspace_id
+    if not base.is_dir():
+        return False
+    for path in base.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.name == ".tdlib-gateway.lock":
+            continue
+        if path.suffix.lower() == ".log":
+            continue
+        try:
+            if path.stat().st_size >= 256:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 async def _notify_status(workspace_id: str, status: str, account_id: str | None, phone: str | None) -> None:
     try:
         await socialize_webhook.notify_account_status(workspace_id, status, account_id=account_id, phone=phone)
@@ -396,6 +421,39 @@ async def ensure_client(workspace_id: str) -> WorkspaceEntry:
         return entry
 
 
+async def _wait_for_tdlib_after_attach(entry: WorkspaceEntry, timeout: float = 15.0) -> None:
+    """Give TDLib time to open an on-disk session before reading authorization_state."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            auth = entry.client.authorization_state
+        except Exception:
+            await asyncio.sleep(0.12)
+            continue
+        if auth != "authorizationStateWaitTdlibParameters":
+            return
+        await asyncio.sleep(0.12)
+
+
+async def reattach_tdlib_client_if_persisted(workspace_id: str) -> bool:
+    """
+    If this workspace has TDLib data on disk, start the client and load the existing session.
+    No-op if the client is already in memory. Returns True if a client entry exists afterward.
+    """
+    if workspace_id in _workspaces:
+        return True
+    if not tdlib_workspace_has_persisted_session(workspace_id):
+        return False
+    try:
+        entry = await ensure_client(workspace_id)
+        await _wait_for_tdlib_after_attach(entry)
+        log.info("TDLib reattached from disk for workspace %s", workspace_id)
+        return True
+    except Exception:
+        log.exception("TDLib reattach from disk failed workspace=%s", workspace_id)
+        return False
+
+
 async def wait_for_phone_prompt(workspace_id: str, timeout: float = 45.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -434,12 +492,18 @@ async def submit_phone(workspace_id: str, phone: str) -> None:
 async def submit_code(workspace_id: str, code: str) -> None:
     entry = _workspaces.get(workspace_id)
     if not entry:
+        await reattach_tdlib_client_if_persisted(workspace_id)
+        entry = _workspaces.get(workspace_id)
+    if not entry:
         raise RuntimeError("No session; call /api/accounts/start first")
     await entry.bridge.put_code(code.strip())
 
 
 async def submit_password(workspace_id: str, password: str) -> None:
     entry = _workspaces.get(workspace_id)
+    if not entry:
+        await reattach_tdlib_client_if_persisted(workspace_id)
+        entry = _workspaces.get(workspace_id)
     if not entry:
         raise RuntimeError("No session; call /api/accounts/start first")
     await entry.bridge.put_password(password)
@@ -483,6 +547,9 @@ async def request_qr_link(workspace_id: str) -> dict[str, Any]:
 
 async def workspace_live_status_async(workspace_id: str) -> dict[str, Any]:
     entry = _workspaces.get(workspace_id)
+    if not entry:
+        await reattach_tdlib_client_if_persisted(workspace_id)
+        entry = _workspaces.get(workspace_id)
     if not entry:
         return {"status": "disconnected", "accountId": None, "phone": None}
     c = entry.client

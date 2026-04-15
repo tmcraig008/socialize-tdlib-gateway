@@ -126,6 +126,8 @@ class SendMessageBody(BaseModel):
     chatId: int
     text: str
     replyToMessageId: int | None = None
+    linkLabel: str | None = None
+    linkUrl: str | None = None
 
 
 @app.post("/api/messages/send", dependencies=[Depends(verify_gateway_key)])
@@ -135,6 +137,8 @@ async def messages_send(body: SendMessageBody):
         body.chatId,
         body.text,
         body.replyToMessageId,
+        link_label=body.linkLabel,
+        link_url=body.linkUrl,
     )
 
 
@@ -143,12 +147,20 @@ class SendPhotoBody(BaseModel):
     chatId: int
     photo: str
     caption: str | None = None
+    linkLabel: str | None = None
+    linkUrl: str | None = None
 
 
 @app.post("/api/media/send-photo", dependencies=[Depends(verify_gateway_key)])
 async def media_photo(body: SendPhotoBody):
     return await session_store.send_media(
-        body.workspaceId, body.chatId, body.photo, "photo", body.caption
+        body.workspaceId,
+        body.chatId,
+        body.photo,
+        "photo",
+        body.caption,
+        link_label=body.linkLabel,
+        link_url=body.linkUrl,
     )
 
 

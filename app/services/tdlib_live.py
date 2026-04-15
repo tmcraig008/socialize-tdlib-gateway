@@ -14,7 +14,7 @@ import httpx
 from pytdbot import types
 
 from app.config import get_settings
-from app.services.tdlib_runtime import get_client
+from app.services.tdlib_runtime import get_client, reattach_tdlib_client_if_persisted
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +94,33 @@ def _require_ready_client(workspace_id: str):
             f"TDLib not connected (state={getattr(c, 'authorization_state', None)!r})."
         )
     return c
+
+
+def _utf16_len(s: str) -> int:
+    """TDLib TextEntity offset/length are in UTF-16 code units."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _formatted_text_plain(text: str) -> types.FormattedText:
+    return types.FormattedText(text=text or "")
+
+
+def _formatted_text_with_link(text_before: str, link_label: str, url: str) -> types.FormattedText:
+    tb = text_before or ""
+    if tb:
+        spacer = "\n\n"
+        combined = tb + spacer + link_label
+        off = _utf16_len(tb + spacer)
+    else:
+        combined = link_label
+        off = 0
+    ln = _utf16_len(link_label)
+    ent = types.TextEntity(
+        offset=off,
+        length=ln,
+        type=types.TextEntityTypeTextUrl(url=url),
+    )
+    return types.FormattedText(text=combined, entities=[ent])
 
 
 def _reply_to(reply_to_message_id: int | None) -> types.InputMessageReplyToMessage | None:
@@ -176,10 +203,17 @@ async def send_message_live(
     chat_id: int,
     text: str,
     reply_to_message_id: int | None,
+    link_label: str | None = None,
+    link_url: str | None = None,
 ) -> int:
+    await reattach_tdlib_client_if_persisted(workspace_id)
     c = _require_ready_client(workspace_id)
+    if link_label and link_url:
+        body = _formatted_text_with_link(text, link_label.strip(), link_url.strip())
+    else:
+        body = _formatted_text_plain(text)
     content = types.InputMessageText(
-        text=types.FormattedText(text=text),
+        text=body,
         clear_draft=True,
     )
     sent = await _send_with_private_chat_fallback(
@@ -199,11 +233,21 @@ async def send_media_live(
     path: str,
     kind: str,
     caption: str | None,
+    link_label: str | None = None,
+    link_url: str | None = None,
 ) -> int:
+    await reattach_tdlib_client_if_persisted(workspace_id)
     c = _require_ready_client(workspace_id)
     local_path, temp = await _resolve_local_path(path, kind)
     td_path = tdlib_local_path_str(local_path)
-    cap = types.FormattedText(text=caption.strip()) if caption and caption.strip() else None
+    cap: types.FormattedText | None
+    raw_cap = (caption or "").strip()
+    if link_label and link_url:
+        cap = _formatted_text_with_link(raw_cap, link_label.strip(), link_url.strip())
+    elif raw_cap:
+        cap = _formatted_text_plain(raw_cap)
+    else:
+        cap = None
     try:
         k = kind.lower()
         if k == "photo":
