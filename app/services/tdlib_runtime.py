@@ -204,15 +204,32 @@ async def _message_to_webhook_payload(
     return body
 
 
-def register_handlers(c: Client, bridge: AuthBridge, workspace_id: str) -> None:
-    @c.on_message()
-    async def on_incoming(_: Client, message: types.Message):
+def _schedule_incoming_webhook(workspace_id: str, client: Client, message: types.Message) -> None:
+    """
+    Never await TDLib methods (e.g. getUser) directly inside on_message: pytdbot processes
+    updates on the same loop; awaiting another request there can deadlock and stop all messages.
+    """
+
+    async def _run() -> None:
         try:
-            payload = await _message_to_webhook_payload(workspace_id, c, message)
+            payload = await _message_to_webhook_payload(workspace_id, client, message)
             if payload:
                 await socialize_webhook.notify_incoming_message(workspace_id, payload)
         except Exception:
             log.exception("incoming message webhook failed")
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:
+        log.exception("no running loop for incoming webhook")
+
+
+def register_handlers(c: Client, bridge: AuthBridge, workspace_id: str) -> None:
+    @c.on_message()
+    async def on_incoming(_: Client, message: types.Message):
+        if message.is_outgoing:
+            return
+        _schedule_incoming_webhook(workspace_id, c, message)
 
     @c.on_updateAuthorizationState()
     async def on_auth(_: Client, auth: types.UpdateAuthorizationState):
