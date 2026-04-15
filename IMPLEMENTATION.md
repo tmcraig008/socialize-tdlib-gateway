@@ -7,21 +7,22 @@
 - **Outgoing** sends return a fake `telegramMessageId` (no Telegram delivery).
 - **Incoming** fan messages require real TDLib; mock does not synthesize them.
 
-## What you must add for production
+## Production (`TDLIB_MODE=live`)
 
-1. **Native TDLib** on the host (or use a Docker image that includes `libtdjson`).
-2. Set Railway **persistent volume** mounted at `TDLIB_DATA_ROOT` (e.g. `/data/tdlib`).
-3. Set env:
+1. **Native TDLib** / `libtdjson` on the host (or a Docker image that includes it).
+2. Persistent volume on `TDLIB_DATA_ROOT` (each Socialize workspace id gets a subfolder).
+3. Env:
    - `API_ID`, `API_HASH` from https://my.telegram.org
    - `TDLIB_MODE=live`
-   - `SOCIALIZE_BACKEND_URL` = your Socialize API URL
-   - `WEB_API_KEY` = same value as Socialize backend
+   - `SOCIALIZE_BACKEND_URL` (Socialize API base, no trailing slash)
+   - `WEB_API_KEY` = same as Socialize backend
+   - `DATABASE_ENCRYPTION_KEY` = stable secret per data root (same idea as “TG no Bot”)
 
-4. Implement in `app/services/tdlib_live.py`:
-   - `send_message_live`
-   - `send_media_live`
-   - A long-running listener that parses TDLib updates and calls:
-     `await socialize_webhook.notify_incoming_message(workspace_id, {...})`
+Implemented:
+
+- **Auth**: phone, code, password, QR via pytdbot (same flow as `TG no Bot`: literal `qr` → `requestQrCodeAuthentication`, QR link from `AuthorizationStateWaitOtherDeviceConfirmation`).
+- **Sends**: `send_message_live` / `send_media_live` in `app/services/tdlib_live.py` (HTTP(S) media URLs are downloaded to a temp file, then sent as `inputFileLocal`).
+- **Inbound**: `register_handlers` posts to Socialize `/api/telegram/tdlib/webhook` for non-outgoing messages (text + basic media metadata; `mediaUrl` may be null).
 
 Payload shape for incoming messages must match Socialize (`backend/src/routes/telegram.ts`):
 
@@ -45,10 +46,9 @@ Payload shape for incoming messages must match Socialize (`backend/src/routes/te
 }
 ```
 
-5. Port your **ClientManager** from the standalone Python project so each `workspaceId` maps to one TDLib client + one data directory (use `filelock` per folder as you already do).
-
 ## Suggested order
 
-1. Deploy gateway in `mock` mode; confirm Socialize can call `/health` and `/api/accounts/status`.
-2. Flip `TDLIB_MODE=live` only after `tdlib_live.py` sends a real test DM.
-3. Add inbound update → webhook last (most moving parts).
+1. Run gateway in `mock` mode; confirm Socialize can call `/health` and `/api/accounts/status`.
+2. Set `TDLIB_MODE=live`, real `API_ID` / `API_HASH`, and sign in one workspace (phone or QR) using the Socialize Settings UI.
+3. Send a test message from Socialize; confirm delivery in Telegram.
+4. Reply from a fan in Telegram; confirm it appears in Socialize (webhook + inbound handler).

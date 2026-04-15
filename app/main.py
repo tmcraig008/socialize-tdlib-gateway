@@ -2,8 +2,9 @@ import logging
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -20,10 +21,24 @@ async def lifespan(_: FastAPI):
     settings = get_settings()
     logger.info("TDLib gateway starting (mode=%s)", settings.tdlib_mode)
     yield
+    if settings.tdlib_mode != "mock":
+        try:
+            from app.services import tdlib_runtime
+
+            await tdlib_runtime.shutdown_all()
+        except Exception:
+            logger.exception("TDLib shutdown")
     logger.info("TDLib gateway shutdown")
 
 
 app = FastAPI(title="Socialize TDLib Gateway", lifespan=lifespan)
+
+
+@app.exception_handler(RuntimeError)
+async def runtime_error_handler(_: Request, exc: RuntimeError):
+    return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -38,8 +38,8 @@ def _next_message_id() -> int:
 
 async def start_workspace(workspace_id: str, phone: str | None) -> dict[str, Any]:
     s = get_session(workspace_id)
+    settings = get_settings()
     async with s._lock:
-        settings = get_settings()
         if phone:
             s.phone = phone
         if settings.tdlib_mode == "mock":
@@ -49,7 +49,15 @@ async def start_workspace(workspace_id: str, phone: str | None) -> dict[str, Any
                 workspace_id, s.status, account_id=s.account_id, phone=s.phone
             )
             return {"status": s.status, "accountId": s.account_id}
-        s.status = "pending_auth"
+
+        from app.services import tdlib_runtime as rt
+
+        await rt.ensure_client(workspace_id)
+        if phone:
+            await rt.submit_phone(workspace_id, phone)
+        live = await rt.workspace_live_status_async(workspace_id)
+        s.status = live.get("status", "pending_auth")
+        s.account_id = live.get("accountId")
         await socialize_webhook.notify_account_status(
             workspace_id, s.status, account_id=s.account_id, phone=s.phone
         )
@@ -58,27 +66,60 @@ async def start_workspace(workspace_id: str, phone: str | None) -> dict[str, Any
 
 async def stop_workspace(workspace_id: str) -> dict[str, Any]:
     s = get_session(workspace_id)
+    settings = get_settings()
     async with s._lock:
+        if settings.tdlib_mode != "mock":
+            from app.services import tdlib_runtime as rt
+
+            await rt.remove_client(workspace_id)
         s.status = "disconnected"
+        s.account_id = None
+        s.qr_token = None
         await socialize_webhook.notify_account_status(workspace_id, "disconnected", phone=s.phone)
         return {"status": "disconnected"}
 
 
 async def workspace_status(workspace_id: str) -> dict[str, Any]:
     s = get_session(workspace_id)
+    settings = get_settings()
     async with s._lock:
+        if settings.tdlib_mode == "mock":
+            return {
+                "status": s.status,
+                "accountId": s.account_id,
+                "phone": s.phone,
+            }
+        from app.services import tdlib_runtime as rt
+
+        live = await rt.workspace_live_status_async(workspace_id)
+        if live.get("accountId"):
+            s.account_id = live["accountId"]
+        s.status = live.get("status", s.status)
         return {
-            "status": s.status,
-            "accountId": s.account_id,
+            "status": live.get("status", s.status),
+            "accountId": live.get("accountId") or s.account_id,
             "phone": s.phone,
         }
 
 
 async def auth_phone(workspace_id: str, phone: str) -> dict[str, Any]:
     s = get_session(workspace_id)
+    settings = get_settings()
     async with s._lock:
         s.phone = phone
-        s.status = "pending_auth"
+        if settings.tdlib_mode == "mock":
+            s.status = "pending_auth"
+            await socialize_webhook.notify_account_status(
+                workspace_id, s.status, account_id=s.account_id, phone=s.phone
+            )
+            return {"status": s.status}
+
+        from app.services import tdlib_runtime as rt
+
+        await rt.submit_phone(workspace_id, phone)
+        live = await rt.workspace_live_status_async(workspace_id)
+        s.status = live.get("status", "pending_auth")
+        s.account_id = live.get("accountId") or s.account_id
         await socialize_webhook.notify_account_status(
             workspace_id, s.status, account_id=s.account_id, phone=s.phone
         )
@@ -86,7 +127,6 @@ async def auth_phone(workspace_id: str, phone: str) -> dict[str, Any]:
 
 
 async def auth_code(workspace_id: str, code: str) -> dict[str, Any]:
-    _ = code
     s = get_session(workspace_id)
     settings = get_settings()
     async with s._lock:
@@ -97,12 +137,20 @@ async def auth_code(workspace_id: str, code: str) -> dict[str, Any]:
                 workspace_id, "connected", account_id=s.account_id, phone=s.phone
             )
             return {"status": "connected"}
-        s.status = "pending_auth"
+
+        from app.services import tdlib_runtime as rt
+
+        await rt.submit_code(workspace_id, code)
+        live = await rt.workspace_live_status_async(workspace_id)
+        s.status = live.get("status", "pending_auth")
+        s.account_id = live.get("accountId") or s.account_id
+        await socialize_webhook.notify_account_status(
+            workspace_id, s.status, account_id=s.account_id, phone=s.phone
+        )
         return {"status": s.status}
 
 
 async def auth_password(workspace_id: str, password: str) -> dict[str, Any]:
-    _ = password
     s = get_session(workspace_id)
     settings = get_settings()
     async with s._lock:
@@ -112,20 +160,45 @@ async def auth_password(workspace_id: str, password: str) -> dict[str, Any]:
                 workspace_id, "connected", account_id=s.account_id, phone=s.phone
             )
             return {"status": "connected"}
+
+        from app.services import tdlib_runtime as rt
+
+        await rt.submit_password(workspace_id, password)
+        live = await rt.workspace_live_status_async(workspace_id)
+        s.status = live.get("status", "pending_auth")
+        s.account_id = live.get("accountId") or s.account_id
+        await socialize_webhook.notify_account_status(
+            workspace_id, s.status, account_id=s.account_id, phone=s.phone
+        )
         return {"status": s.status}
 
 
 async def auth_qr_create(workspace_id: str) -> dict[str, Any]:
     s = get_session(workspace_id)
+    settings = get_settings()
     async with s._lock:
-        token = f"qr-{workspace_id[:8]}-{int(time.time())}"
-        s.qr_token = token
-        s.qr_expires_at = time.time() + 600
-        s.status = "pending_auth"
+        if settings.tdlib_mode == "mock":
+            token = f"qr-{workspace_id[:8]}-{int(time.time())}"
+            s.qr_token = token
+            s.qr_expires_at = time.time() + 600
+            s.status = "pending_auth"
+            await socialize_webhook.notify_account_status(workspace_id, s.status, phone=s.phone)
+            return {
+                "token": token,
+                "qrData": f"tg://login?token={token}",
+                "status": s.status,
+            }
+
+        from app.services import tdlib_runtime as rt
+
+        out = await rt.request_qr_link(workspace_id)
+        s.qr_token = out.get("token")
+        s.status = out.get("status", "pending_auth")
+        s.qr_expires_at = time.time() + 120
         await socialize_webhook.notify_account_status(workspace_id, s.status, phone=s.phone)
         return {
-            "token": token,
-            "qrData": f"tg://login?token={token}",
+            "token": out.get("token"),
+            "qrData": out.get("qrData"),
             "status": s.status,
         }
 
@@ -134,16 +207,30 @@ async def auth_qr_status(workspace_id: str, token: str) -> dict[str, Any]:
     s = get_session(workspace_id)
     settings = get_settings()
     async with s._lock:
-        if settings.tdlib_mode == "mock" and s.qr_token == token and time.time() < s.qr_expires_at + 3600:
-            s.status = "connected"
-            s.account_id = s.account_id or f"mock-{workspace_id[:8]}"
+        if settings.tdlib_mode == "mock":
+            if s.qr_token == token and time.time() < s.qr_expires_at + 3600:
+                s.status = "connected"
+                s.account_id = s.account_id or f"mock-{workspace_id[:8]}"
+                await socialize_webhook.notify_account_status(
+                    workspace_id, "connected", account_id=s.account_id, phone=s.phone
+                )
+                return {"status": "connected"}
+            if s.qr_token != token:
+                return {"status": "pending_auth"}
+            return {"status": s.status}
+
+        from app.services import tdlib_runtime as rt
+
+        out = await rt.qr_status(workspace_id, token)
+        st = out.get("status", "pending_auth")
+        s.status = st
+        if st == "connected":
+            live = await rt.workspace_live_status_async(workspace_id)
+            s.account_id = live.get("accountId") or s.account_id
             await socialize_webhook.notify_account_status(
                 workspace_id, "connected", account_id=s.account_id, phone=s.phone
             )
-            return {"status": "connected"}
-        if s.qr_token != token:
-            return {"status": "pending_auth"}
-        return {"status": s.status}
+        return {"status": st}
 
 
 async def send_text(

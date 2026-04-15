@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     api_hash: str = ""
     tdlib_data_root: str = "./tdlib_data"
     tdlib_mode: str = "mock"
+    database_encryption_key: str = ""
+    td_verbosity: int = 1
 
 
 @lru_cache
