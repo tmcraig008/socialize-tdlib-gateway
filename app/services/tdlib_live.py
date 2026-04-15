@@ -99,6 +99,43 @@ def _reply_to(reply_to_message_id: int | None) -> types.InputMessageReplyToMessa
     return types.InputMessageReplyToMessage(message_id=reply_to_message_id)
 
 
+async def _resolve_chat_id_for_send(c, target_chat_id: int) -> int:
+    """
+    Socialize stores Telegram user ids; TDLib sendMessage expects a chat id.
+    For user ids, createPrivateChat returns/creates the real private chat id.
+    """
+    if target_chat_id <= 0:
+        return target_chat_id
+    maybe = await c.createPrivateChat(user_id=target_chat_id, force=False)
+    if not isinstance(maybe, types.Error) and getattr(maybe, "id", 0):
+        return int(maybe.id)
+    # Fall back to caller-provided id (it may already be a real chat id).
+    return target_chat_id
+
+
+async def _send_with_private_chat_fallback(
+    c,
+    target_chat_id: int,
+    *,
+    reply_to,
+    input_message_content,
+):
+    resolved_chat_id = await _resolve_chat_id_for_send(c, target_chat_id)
+    sent = await c.sendMessage(
+        chat_id=resolved_chat_id,
+        reply_to=reply_to,
+        input_message_content=input_message_content,
+    )
+    if isinstance(sent, types.Error) and resolved_chat_id != target_chat_id:
+        # Retry with original id in case the input was already a real chat id.
+        sent = await c.sendMessage(
+            chat_id=target_chat_id,
+            reply_to=reply_to,
+            input_message_content=input_message_content,
+        )
+    return sent
+
+
 async def send_message_live(
     workspace_id: str,
     chat_id: int,
@@ -110,8 +147,9 @@ async def send_message_live(
         text=types.FormattedText(text=text),
         clear_draft=True,
     )
-    sent = await c.sendMessage(
-        chat_id=chat_id,
+    sent = await _send_with_private_chat_fallback(
+        c,
+        chat_id,
         reply_to=_reply_to(reply_to_message_id),
         input_message_content=content,
     )
@@ -154,7 +192,12 @@ async def send_media_live(
                 document=types.InputFileLocal(path=td_path),
                 caption=cap,
             )
-        sent = await c.sendMessage(chat_id=chat_id, input_message_content=content)
+        sent = await _send_with_private_chat_fallback(
+            c,
+            chat_id,
+            reply_to=None,
+            input_message_content=content,
+        )
         if isinstance(sent, types.Error):
             raise RuntimeError(sent.message)
         return int(sent.id)
