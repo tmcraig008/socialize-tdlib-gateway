@@ -36,13 +36,13 @@ def install_pytdbot_schema_fallback() -> None:
     if _installed:
         return
     from pytdbot import types as td_types
-    from pytdbot.utils import obj_encoder, utils
+    from pytdbot.utils import obj_encoder, to_camel_case
 
     _orig = obj_encoder.dict_to_obj
 
     def dict_to_obj(dict_obj: Any, client=None):
         if isinstance(dict_obj, dict) and "@type" in dict_obj:
-            camel = utils.to_camel_case(dict_obj["@type"])
+            camel = to_camel_case(dict_obj["@type"])
             if not hasattr(td_types, camel):
                 log.debug(
                     "TDLib object type %r has no pytdbot class %s; using fallback",
