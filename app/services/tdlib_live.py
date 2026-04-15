@@ -4,6 +4,7 @@ Real TDLib sends for TDLIB_MODE=live (pytdbot).
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path

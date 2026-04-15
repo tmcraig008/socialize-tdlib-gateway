@@ -36,7 +36,10 @@ def install_pytdbot_schema_fallback() -> None:
     if _installed:
         return
     from pytdbot import types as td_types
-    from pytdbot.utils import obj_encoder, to_camel_case
+    import pytdbot.client as client_mod
+    import pytdbot.utils as utils_pkg
+    import pytdbot.utils.obj_encoder as obj_encoder
+    from pytdbot.utils import to_camel_case
 
     _orig = obj_encoder.dict_to_obj
 
@@ -53,5 +56,8 @@ def install_pytdbot_schema_fallback() -> None:
                 return o
         return _orig(dict_obj, client)
 
+    # Client.process_update imported dict_to_obj at module load; patch all aliases.
     obj_encoder.dict_to_obj = dict_to_obj
+    utils_pkg.dict_to_obj = dict_to_obj
+    client_mod.dict_to_obj = dict_to_obj
     _installed = True
