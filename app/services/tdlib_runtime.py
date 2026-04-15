@@ -143,7 +143,9 @@ async def _notify_status(workspace_id: str, status: str, account_id: str | None,
         log.exception("notify_account_status failed for %s", workspace_id)
 
 
-def _message_to_webhook_payload(workspace_id: str, message: types.Message) -> dict[str, Any] | None:
+async def _message_to_webhook_payload(
+    workspace_id: str, client: Client, message: types.Message
+) -> dict[str, Any] | None:
     if message.is_outgoing:
         return None
     chat_id = message.chat_id
@@ -177,7 +179,15 @@ def _message_to_webhook_payload(workspace_id: str, message: types.Message) -> di
     sender: dict[str, Any] = {"id": chat_id, "username": None, "firstName": None, "lastName": None}
     if isinstance(sid, types.MessageSenderUser):
         sender["id"] = sid.user_id
-    # Best-effort names (optional enrichment would need getUser)
+        try:
+            u = await client.getUser(sid.user_id)
+            if not isinstance(u, types.Error):
+                sender["username"] = getattr(u, "username", None)
+                sender["firstName"] = getattr(u, "first_name", None)
+                sender["lastName"] = getattr(u, "last_name", None)
+        except Exception:
+            # Keep webhook robust even if user lookup fails.
+            pass
     body: dict[str, Any] = {
         "chatId": chat_id,
         "messageId": message.id,
@@ -195,7 +205,7 @@ def register_handlers(c: Client, bridge: AuthBridge, workspace_id: str) -> None:
     @c.on_message()
     async def on_incoming(_: Client, message: types.Message):
         try:
-            payload = _message_to_webhook_payload(workspace_id, message)
+            payload = await _message_to_webhook_payload(workspace_id, c, message)
             if payload:
                 await socialize_webhook.notify_incoming_message(workspace_id, payload)
         except Exception:

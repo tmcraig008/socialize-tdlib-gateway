@@ -7,11 +7,12 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import httpx
 from pytdbot import types
 
+from app.config import get_settings
 from app.services.tdlib_runtime import get_client
 
 
@@ -61,11 +62,24 @@ def _suffix_from_url_or_kind(url_or_path: str, kind: str) -> str:
 
 async def _resolve_local_path(path_or_url: str, kind: str) -> tuple[str, bool]:
     """Returns (local_path, should_unlink)."""
-    if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
-        suf = _suffix_from_url_or_kind(path_or_url, kind)
-        tmp = await _download_url_to_temp(path_or_url, suf)
+    raw = (path_or_url or "").strip()
+    if raw.startswith("http://") or raw.startswith("https://"):
+        suf = _suffix_from_url_or_kind(raw, kind)
+        tmp = await _download_url_to_temp(raw, suf)
         return tmp, True
-    return path_or_url, False
+    # Socialize often sends attachment URLs as app-relative paths like /uploads/...
+    if raw.startswith("/"):
+        base = get_settings().socialize_backend_url.rstrip("/") + "/"
+        full = urljoin(base, raw.lstrip("/"))
+        suf = _suffix_from_url_or_kind(full, kind)
+        tmp = await _download_url_to_temp(full, suf)
+        return tmp, True
+    if raw and Path(raw).exists():
+        return raw, False
+    raise RuntimeError(
+        f"Media path is not reachable for TDLib send: {path_or_url!r}. "
+        "Use an http(s) URL, an app-relative /uploads/... URL, or a valid local file path."
+    )
 
 
 def _require_ready_client(workspace_id: str):
