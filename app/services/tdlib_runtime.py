@@ -469,8 +469,20 @@ async def workspace_live_status_async(workspace_id: str) -> dict[str, Any]:
     if not entry:
         return {"status": "disconnected", "accountId": None, "phone": None}
     c = entry.client
-    auth = getattr(c, "authorization_state", None)
+    # pytdbot can transiently raise while authorization state is not initialized yet
+    # (startup/race or after shutdown). Status endpoint must never 500 on this.
+    try:
+        auth = c.authorization_state
+    except Exception:
+        auth = None
     status = _map_authorization_to_status(auth)
+    if status == "disconnected":
+        # Bridge still carries a meaningful auth step while property is unstable.
+        br_state = getattr(entry.bridge, "state_name", "") or ""
+        if br_state in ("waitPhoneNumber", "waitCode", "waitQr", "waitPassword"):
+            status = "pending_auth"
+        elif br_state == "ready":
+            status = "connected"
     account_id: str | None = None
     if status == "connected":
         try:
