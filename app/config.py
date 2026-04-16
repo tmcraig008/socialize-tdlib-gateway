@@ -7,6 +7,7 @@ class Settings(BaseSettings):
 
     web_api_key: str = ""
     socialize_backend_url: str = "http://127.0.0.1:3002"
+    gateway_public_url: str = ""
     api_id: int = 0
     api_hash: str = ""
     tdlib_data_root: str = "./tdlib_data"

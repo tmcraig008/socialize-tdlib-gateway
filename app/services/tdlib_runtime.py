@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
+from urllib.parse import quote
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -139,6 +141,63 @@ def _map_authorization_to_status(auth_state: str | None) -> str:
     return "pending_auth"
 
 
+def _gateway_public_base_url() -> str | None:
+    s = get_settings()
+    if s.gateway_public_url and s.gateway_public_url.strip():
+        return s.gateway_public_url.strip().rstrip("/")
+    host = (getattr(s, "railway_public_domain", None) or "").strip()
+    if host:
+        return f"https://{host.rstrip('/')}"
+    env_host = (os.environ.get("RAILWAY_PUBLIC_DOMAIN", "") or "").strip()
+    if env_host:
+        return f"https://{env_host.rstrip('/')}"
+    return None
+
+
+def _extract_message_media_file_id(content: Any) -> int | None:
+    try:
+        if isinstance(content, types.MessagePhoto):
+            sizes = getattr(content.photo, "sizes", None) or []
+            if sizes:
+                file_obj = getattr(sizes[-1], "photo", None)
+                file_id = getattr(file_obj, "id", None)
+                if isinstance(file_id, int):
+                    return file_id
+        if isinstance(content, types.MessageVideo):
+            file_obj = getattr(content.video, "video", None)
+            file_id = getattr(file_obj, "id", None)
+            if isinstance(file_id, int):
+                return file_id
+        if isinstance(content, types.MessageDocument):
+            file_obj = getattr(content.document, "document", None)
+            file_id = getattr(file_obj, "id", None)
+            if isinstance(file_id, int):
+                return file_id
+        if isinstance(content, types.MessageVoiceNote):
+            file_obj = getattr(content.voice_note, "voice", None)
+            file_id = getattr(file_obj, "id", None)
+            if isinstance(file_id, int):
+                return file_id
+        if isinstance(content, types.MessageAnimation):
+            file_obj = getattr(content.animation, "animation", None)
+            file_id = getattr(file_obj, "id", None)
+            if isinstance(file_id, int):
+                return file_id
+        if isinstance(content, types.MessageSticker):
+            file_obj = getattr(content.sticker, "sticker", None)
+            file_id = getattr(file_obj, "id", None)
+            if isinstance(file_id, int):
+                return file_id
+    except Exception:
+        return None
+    return None
+
+
+def _is_type(obj: Any, type_name: str) -> bool:
+    cls = getattr(types, type_name, None)
+    return isinstance(obj, cls) if cls is not None else False
+
+
 def tdlib_workspace_has_persisted_session(workspace_id: str) -> bool:
     """
     Heuristic: TDLib wrote real data under TDLIB_DATA_ROOT/<workspaceId> after a successful login.
@@ -180,6 +239,7 @@ async def _message_to_webhook_payload(
     text = ""
     caption = ""
     media_type: str | None = None
+    media_file_id: int | None = None
     c = message.content
     if isinstance(c, types.MessageText) and c.text:
         text = c.text.text or ""
@@ -197,11 +257,26 @@ async def _message_to_webhook_payload(
             caption = c.caption.text or ""
     elif isinstance(c, types.MessageVoiceNote):
         media_type = "audio"
+    elif _is_type(c, "MessageAnimation"):
+        media_type = "photo"
+        cap = getattr(c, "caption", None)
+        if cap and getattr(cap, "text", None):
+            caption = cap.text or ""
+    elif _is_type(c, "MessageSticker"):
+        media_type = "document"
     else:
         try:
             text = message.text or ""
         except Exception:
             text = ""
+    media_file_id = _extract_message_media_file_id(c)
+    media_url: str | None = None
+    public_base = _gateway_public_base_url()
+    if public_base and media_file_id is not None:
+        media_url = (
+            f"{public_base}/api/media/tdlib-file"
+            f"?workspaceId={quote(workspace_id, safe='')}&fileId={media_file_id}"
+        )
 
     sid = message.sender_id
     sender: dict[str, Any] = {"id": chat_id, "username": None, "firstName": None, "lastName": None}
@@ -223,7 +298,7 @@ async def _message_to_webhook_payload(
         "caption": caption or None,
         "sender": sender,
         "mediaType": media_type,
-        "mediaUrl": None,
+        "mediaUrl": media_url,
     }
     _ = workspace_id
     return body

@@ -1,10 +1,12 @@
 import logging
+import mimetypes
+import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -51,6 +53,35 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/media/tdlib-file")
+async def tdlib_file(workspaceId: str, fileId: int):
+    """
+    Public media proxy for inbound TDLib attachments.
+    The Socialize backend stores this URL as attachment_url for chat rendering.
+    """
+    settings = get_settings()
+    if settings.tdlib_mode == "mock":
+        return JSONResponse(status_code=404, content={"error": "TDLib live mode is required"})
+    try:
+        from app.services import tdlib_runtime
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "TDLib runtime unavailable"})
+
+    entry = await tdlib_runtime.ensure_client(workspaceId)
+    client = entry.client
+    file_obj = await client.downloadFile(file_id=fileId, priority=32, synchronous=True)
+    if file_obj is None or getattr(file_obj, "getType", lambda: "")() == "error":
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+
+    local = getattr(file_obj, "local", None)
+    local_path = getattr(local, "path", None) if local else None
+    if not local_path or not os.path.exists(local_path):
+        return JSONResponse(status_code=404, content={"error": "Downloaded file path missing"})
+
+    media_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+    return FileResponse(path=local_path, media_type=media_type)
 
 
 class StartBody(BaseModel):
