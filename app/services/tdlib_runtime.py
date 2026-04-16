@@ -188,6 +188,12 @@ def _extract_message_media_file_id(content: Any) -> int | None:
             file_id = getattr(file_obj, "id", None)
             if isinstance(file_id, int):
                 return file_id
+        if isinstance(content, types.MessageVideoNote):
+            vn = getattr(content, "video_note", None)
+            file_obj = getattr(vn, "video", None) if vn else None
+            file_id = getattr(file_obj, "id", None)
+            if isinstance(file_id, int):
+                return file_id
     except Exception:
         return None
     return None
@@ -241,8 +247,9 @@ async def _message_to_webhook_payload(
     media_type: str | None = None
     media_file_id: int | None = None
     c = message.content
-    if isinstance(c, types.MessageText) and c.text:
-        text = c.text.text or ""
+    tdlib_content_type = type(c).__name__ if c is not None else None
+    if isinstance(c, types.MessageText):
+        text = (c.text.text or "") if c.text else ""
     elif isinstance(c, types.MessagePhoto):
         media_type = "photo"
         if c.caption and c.caption.text:
@@ -256,14 +263,66 @@ async def _message_to_webhook_payload(
         if c.caption and c.caption.text:
             caption = c.caption.text or ""
     elif isinstance(c, types.MessageVoiceNote):
-        media_type = "audio"
+        media_type = "voice"
+    elif isinstance(c, types.MessageVideoNote):
+        media_type = "video_note"
     elif _is_type(c, "MessageAnimation"):
-        media_type = "photo"
+        media_type = "animation"
         cap = getattr(c, "caption", None)
         if cap and getattr(cap, "text", None):
             caption = cap.text or ""
     elif _is_type(c, "MessageSticker"):
-        media_type = "document"
+        media_type = "sticker"
+    elif _is_type(c, "MessageLocation"):
+        media_type = "location"
+        loc = getattr(c, "location", None)
+        if loc is not None:
+            lat = getattr(loc, "latitude", None)
+            lon = getattr(loc, "longitude", None)
+            if lat is not None and lon is not None:
+                text = f"{lat}, {lon}"
+    elif _is_type(c, "MessageVenue"):
+        media_type = "venue"
+        ven = getattr(c, "venue", None)
+        if ven is not None:
+            title = getattr(ven, "title", None) or ""
+            addr = getattr(ven, "address", None) or ""
+            text = " — ".join(p for p in (title.strip(), addr.strip()) if p)
+    elif _is_type(c, "MessageContact"):
+        media_type = "contact"
+        contact = getattr(c, "contact", None)
+        if contact is not None:
+            fn = getattr(contact, "first_name", None) or ""
+            ln = getattr(contact, "last_name", None) or ""
+            phone = getattr(contact, "phone_number", None) or ""
+            text = " ".join(p for p in (fn.strip(), ln.strip(), phone.strip()) if p)
+    elif _is_type(c, "MessagePoll"):
+        media_type = "poll"
+        poll = getattr(c, "poll", None)
+        if poll is not None:
+            q = getattr(poll, "question", None)
+            if isinstance(q, str):
+                text = q
+            else:
+                qt = getattr(q, "text", None) if q is not None else None
+                text = (qt or "") if isinstance(qt, str) else ""
+    elif _is_type(c, "MessageDice"):
+        media_type = "dice"
+        emoji = getattr(c, "emoji", None)
+        val = getattr(c, "value", None)
+        if emoji and val is not None:
+            text = f"{emoji} {val}"
+        elif val is not None:
+            text = str(val)
+    elif _is_type(c, "MessageGame"):
+        media_type = "game"
+        game = getattr(c, "game", None)
+        if game is not None:
+            text = getattr(game, "title", None) or ""
+    elif _is_type(c, "MessageInvoice"):
+        media_type = "invoice"
+        title = getattr(c, "title", None)
+        text = (title or "") if isinstance(title, str) else ""
     else:
         try:
             text = message.text or ""
@@ -299,6 +358,7 @@ async def _message_to_webhook_payload(
         "sender": sender,
         "mediaType": media_type,
         "mediaUrl": media_url,
+        "tdlibContentType": tdlib_content_type,
     }
     _ = workspace_id
     return body

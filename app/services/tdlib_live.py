@@ -227,6 +227,41 @@ async def send_message_live(
     return int(sent.id)
 
 
+async def edit_message_text_live(
+    workspace_id: str,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    link_label: str | None = None,
+    link_url: str | None = None,
+) -> None:
+    """Edit an existing text message in a private chat (same chat resolution as send)."""
+    await reattach_tdlib_client_if_persisted(workspace_id)
+    c = _require_ready_client(workspace_id)
+    if link_label and link_url:
+        body = _formatted_text_with_link(text, link_label.strip(), link_url.strip())
+    else:
+        body = _formatted_text_plain(text)
+    content = types.InputMessageText(
+        text=body,
+        clear_draft=True,
+    )
+    resolved_chat_id = await _resolve_chat_id_for_send(c, chat_id)
+    result = await c.editMessageText(
+        chat_id=resolved_chat_id,
+        message_id=message_id,
+        input_message_content=content,
+    )
+    if isinstance(result, types.Error) and resolved_chat_id != chat_id:
+        result = await c.editMessageText(
+            chat_id=chat_id,
+            message_id=message_id,
+            input_message_content=content,
+        )
+    if isinstance(result, types.Error):
+        raise RuntimeError(result.message)
+
+
 async def send_media_live(
     workspace_id: str,
     chat_id: int,

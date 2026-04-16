@@ -265,6 +265,37 @@ async def send_text(
         raise RuntimeError(str(e)) from e
 
 
+async def edit_text(
+    workspace_id: str,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    link_label: str | None = None,
+    link_url: str | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    s = get_session(workspace_id)
+    async with s._lock:
+        if s.status != "connected" and settings.tdlib_mode == "mock":
+            s.status = "connected"
+    if settings.tdlib_mode == "mock":
+        return {"ok": True}
+    try:
+        from app.services.tdlib_live import edit_message_text_live
+
+        await edit_message_text_live(
+            workspace_id,
+            chat_id,
+            message_id,
+            text,
+            link_label=link_label,
+            link_url=link_url,
+        )
+        return {"ok": True}
+    except NotImplementedError as e:
+        raise RuntimeError(str(e)) from e
+
+
 async def send_media(
     workspace_id: str,
     chat_id: int,

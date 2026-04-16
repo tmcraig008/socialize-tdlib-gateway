@@ -173,6 +173,27 @@ async def messages_send(body: SendMessageBody):
     )
 
 
+class EditMessageBody(BaseModel):
+    workspaceId: str
+    chatId: int
+    messageId: int
+    text: str
+    linkLabel: str | None = None
+    linkUrl: str | None = None
+
+
+@app.post("/api/messages/edit", dependencies=[Depends(verify_gateway_key)])
+async def messages_edit(body: EditMessageBody):
+    return await session_store.edit_text(
+        body.workspaceId,
+        body.chatId,
+        body.messageId,
+        body.text,
+        link_label=body.linkLabel,
+        link_url=body.linkUrl,
+    )
+
+
 class SendPhotoBody(BaseModel):
     workspaceId: str
     chatId: int
