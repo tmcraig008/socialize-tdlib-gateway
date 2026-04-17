@@ -240,8 +240,10 @@ async def edit_message_text_live(
     c = _require_ready_client(workspace_id)
     if link_label and link_url:
         body = _formatted_text_with_link(text, link_label.strip(), link_url.strip())
+        plain_text = body.text
     else:
         body = _formatted_text_plain(text)
+        plain_text = text
     content = types.InputMessageText(
         text=body,
         clear_draft=True,
@@ -257,6 +259,13 @@ async def edit_message_text_live(
             chat_id=chat_id,
             message_id=message_id,
             input_message_content=content,
+        )
+    if isinstance(result, types.Error):
+        # Fallback for TDLib stacks where editMessageText rejects but text helper succeeds.
+        result = await c.editTextMessage(
+            chat_id=resolved_chat_id,
+            message_id=message_id,
+            text=plain_text,
         )
     if isinstance(result, types.Error):
         raise RuntimeError(result.message)

@@ -239,9 +239,8 @@ async def _notify_status(workspace_id: str, status: str, account_id: str | None,
 async def _message_to_webhook_payload(
     workspace_id: str, client: Client, message: types.Message
 ) -> dict[str, Any] | None:
-    if message.is_outgoing:
-        return None
     chat_id = message.chat_id
+    is_outgoing = bool(getattr(message, "is_outgoing", False))
     text = ""
     caption = ""
     media_type: str | None = None
@@ -350,9 +349,22 @@ async def _message_to_webhook_payload(
         except Exception:
             # Keep webhook robust even if user lookup fails.
             pass
+
+    peer_user_id: int | None = None
+    try:
+        chat = await client.getChat(chat_id=chat_id)
+        if not isinstance(chat, types.Error):
+            chat_type = getattr(chat, "type", None)
+            u = getattr(chat_type, "user_id", None)
+            if isinstance(u, int):
+                peer_user_id = u
+    except Exception:
+        peer_user_id = None
     body: dict[str, Any] = {
         "chatId": chat_id,
         "messageId": message.id,
+        "isOutgoing": is_outgoing,
+        "peerUserId": peer_user_id,
         "text": text or None,
         "caption": caption or None,
         "sender": sender,
@@ -387,8 +399,6 @@ def _schedule_incoming_webhook(workspace_id: str, client: Client, message: types
 def register_handlers(c: Client, bridge: AuthBridge, workspace_id: str) -> None:
     @c.on_message()
     async def on_incoming(_: Client, message: types.Message):
-        if message.is_outgoing:
-            return
         _schedule_incoming_webhook(workspace_id, c, message)
 
     @c.on_updateAuthorizationState()
