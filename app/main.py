@@ -18,6 +18,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _largest_profile_photo_file_id(result: object) -> int | None:
+    """Resolve TDLib getUserProfilePhotos result to a downloadable file id (largest JPEG size)."""
+    if result is None:
+        return None
+    get_type_fn = getattr(result, "getType", None)
+    if callable(get_type_fn) and get_type_fn() == "error":
+        return None
+    photos = getattr(result, "photos", None) or []
+    if not photos:
+        return None
+    first = photos[0]
+    sizes = getattr(first, "sizes", None) or []
+    if not sizes:
+        return None
+
+    def size_key(s: object) -> int:
+        w = int(getattr(s, "width", 0) or 0)
+        h = int(getattr(s, "height", 0) or 0)
+        return w * h
+
+    best = max(sizes, key=size_key)
+    photo = getattr(best, "photo", None)
+    if photo is None:
+        return None
+    fid = int(getattr(photo, "id", 0) or 0)
+    return fid if fid > 0 else None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
@@ -82,6 +110,43 @@ async def tdlib_file(workspaceId: str, fileId: int):
 
     media_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
     return FileResponse(path=local_path, media_type=media_type)
+
+
+class ProfilePhotoFileBody(BaseModel):
+    workspaceId: str
+    telegramUserId: int = Field(..., ge=1)
+
+
+@app.post("/api/users/profile-photo-file", dependencies=[Depends(verify_gateway_key)])
+async def user_profile_photo_file(body: ProfilePhotoFileBody):
+    """
+    Returns TDLib remote file id for a user's current profile photo (largest size).
+    The Socialize backend downloads bytes via GET /api/media/tdlib-file.
+    """
+    settings = get_settings()
+    if settings.tdlib_mode == "mock":
+        return JSONResponse(status_code=404, content={"error": "TDLib live mode is required"})
+    try:
+        from app.services import tdlib_runtime
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "TDLib runtime unavailable"})
+
+    try:
+        entry = await tdlib_runtime.ensure_client(body.workspaceId)
+        result = await entry.client.getUserProfilePhotos(
+            user_id=body.telegramUserId, offset=0, limit=1
+        )
+    except Exception as e:
+        logger.exception("getUserProfilePhotos failed")
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+    file_id = _largest_profile_photo_file_id(result)
+    if file_id is None:
+        err = "No profile photo"
+        if result is not None and getattr(result, "getType", lambda: "")() == "error":
+            err = getattr(result, "message", None) or err
+        return JSONResponse(status_code=404, content={"error": err})
+    return {"fileId": file_id}
 
 
 class StartBody(BaseModel):
