@@ -4,6 +4,7 @@ Real TDLib sends for TDLIB_MODE=live (pytdbot).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -17,6 +18,26 @@ from app.config import get_settings
 from app.services.tdlib_runtime import get_client, reattach_tdlib_client_if_persisted
 
 log = logging.getLogger(__name__)
+
+# TDLib reads InputFileLocal asynchronously after sendMessage returns; deleting the temp file
+# in a finally block races the upload and recipients often never receive the media.
+_TEMP_UNLINK_DELAY_SEC = 600.0
+
+
+async def _unlink_after_delay(path: str, delay_sec: float) -> None:
+    await asyncio.sleep(delay_sec)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _schedule_temp_file_delete(path: str, delay_sec: float = _TEMP_UNLINK_DELAY_SEC) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_unlink_after_delay(path, delay_sec))
 
 
 def tdlib_local_path_str(path: str) -> str:
@@ -323,13 +344,23 @@ async def send_media_live(
         )
         if isinstance(sent, types.Error):
             raise RuntimeError(sent.message)
-        return int(sent.id)
-    finally:
+        mid = int(sent.id)
+        if temp:
+            _schedule_temp_file_delete(local_path)
+            log.info(
+                "TDLib media queued (msg_id=%s); temp file delete scheduled in %ss: %s",
+                mid,
+                int(_TEMP_UNLINK_DELAY_SEC),
+                local_path,
+            )
+        return mid
+    except Exception:
         if temp:
             try:
                 os.unlink(local_path)
             except OSError:
                 pass
+        raise
 
 
 async def on_incoming_update_for_workspace(workspace_id: str, update: object) -> None:
