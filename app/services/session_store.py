@@ -36,6 +36,19 @@ def _next_message_id() -> int:
     return int(time.time() * 1000) % 1_000_000_000 + random.randint(0, 999)
 
 
+def _tdlib_send_meta(settings: Any) -> dict[str, Any]:
+    """Expose whether outbound traffic is real TDLib or mock simulation (Socialize must not treat mock as delivered)."""
+    mode = str(getattr(settings, "tdlib_mode", "mock") or "mock").strip().lower()
+    return {
+        "tdlibMode": getattr(settings, "tdlib_mode", None) or "mock",
+        "simulated": mode == "mock",
+    }
+
+
+def _is_mock_mode(settings: Any) -> bool:
+    return str(getattr(settings, "tdlib_mode", "mock") or "mock").strip().lower() == "mock"
+
+
 async def start_workspace(workspace_id: str, phone: str | None) -> dict[str, Any]:
     s = get_session(workspace_id)
     settings = get_settings()
@@ -245,10 +258,10 @@ async def send_text(
     settings = get_settings()
     s = get_session(workspace_id)
     async with s._lock:
-        if s.status != "connected" and settings.tdlib_mode == "mock":
+        if s.status != "connected" and _is_mock_mode(settings):
             s.status = "connected"
-    if settings.tdlib_mode == "mock":
-        return {"telegramMessageId": _next_message_id()}
+    if _is_mock_mode(settings):
+        return {"telegramMessageId": _next_message_id(), **_tdlib_send_meta(settings)}
     try:
         from app.services.tdlib_live import send_message_live
 
@@ -260,7 +273,7 @@ async def send_text(
             link_label=link_label,
             link_url=link_url,
         )
-        return {"telegramMessageId": mid}
+        return {"telegramMessageId": mid, **_tdlib_send_meta(settings)}
     except NotImplementedError as e:
         raise RuntimeError(str(e)) from e
 
@@ -276,10 +289,10 @@ async def edit_text(
     settings = get_settings()
     s = get_session(workspace_id)
     async with s._lock:
-        if s.status != "connected" and settings.tdlib_mode == "mock":
+        if s.status != "connected" and _is_mock_mode(settings):
             s.status = "connected"
-    if settings.tdlib_mode == "mock":
-        return {"ok": True}
+    if _is_mock_mode(settings):
+        return {"ok": True, **_tdlib_send_meta(settings)}
     try:
         from app.services.tdlib_live import edit_message_text_live
 
@@ -291,7 +304,7 @@ async def edit_text(
             link_label=link_label,
             link_url=link_url,
         )
-        return {"ok": True}
+        return {"ok": True, **_tdlib_send_meta(settings)}
     except NotImplementedError as e:
         raise RuntimeError(str(e)) from e
 
@@ -306,8 +319,8 @@ async def send_media(
     link_url: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
-    if settings.tdlib_mode == "mock":
-        return {"telegramMessageId": _next_message_id()}
+    if _is_mock_mode(settings):
+        return {"telegramMessageId": _next_message_id(), **_tdlib_send_meta(settings)}
     try:
         from app.services.tdlib_live import send_media_live
 
@@ -320,6 +333,6 @@ async def send_media(
             link_label=link_label,
             link_url=link_url,
         )
-        return {"telegramMessageId": mid}
+        return {"telegramMessageId": mid, **_tdlib_send_meta(settings)}
     except NotImplementedError as e:
         raise RuntimeError(str(e)) from e
